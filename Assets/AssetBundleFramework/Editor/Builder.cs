@@ -1,6 +1,10 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
 using System.Xml;
+using Unity.VisualScripting;
 using UnityEditor;
 using UnityEngine;
 
@@ -18,15 +22,16 @@ public static class Builder
     private const string PLATFORM = "Windows";
 #endif
 
-    // 打包设置
-    public static BuildSetting buildSetting { get; private set; }
+    public static BuildSetting buildSetting { get; private set; } // 打包设置
+
+    public static string buildPath { get; private set; } // 打包目录
 
     #region Build MenuItem
 
     [MenuItem("Tools/ResBuild/Windows")]
     public static void BuildWindows()
     {
-        Debug.Log("aaa");
+        Debug.Log("执行了BuildWindows");
     }
 
     public static void SwitchPlatform()
@@ -49,7 +54,21 @@ public static class Builder
 
     private static BuildSetting LoadSetting(string settingPath)
     {
-        //buildSetting = 
+        buildSetting = XmlUtility.Read<BuildSetting>(settingPath);
+        if (buildSetting == null)
+        {
+            throw new Exception($"Load buildSetting failed, SettingPath:{settingPath}");
+        }
+
+        (buildSetting as ISupportInitialize)?.EndInit();
+
+        buildPath = Path.GetFullPath(buildSetting.buildRoot).Replace("\\", "/");
+        if (buildPath.Length > 0 && buildPath[buildPath.Length - 1] != '/')
+        {
+            buildPath += "/";
+        }
+
+        buildPath += $"{PLATFORM}/";
 
         return buildSetting;
     }
