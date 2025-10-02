@@ -30,5 +30,5 @@ public class BuildItem
 
     // 配合该打包设置的个数
     [XmlIgnore]
-    public int count { get; set; }
+    public int Count { get; set; }
 }
