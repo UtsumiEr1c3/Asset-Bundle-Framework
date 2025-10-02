@@ -4,10 +4,12 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using System.Xml;
 using Unity.VisualScripting;
 using UnityEditor;
 using UnityEngine;
+using static UnityEngine.Rendering.VirtualTexturing.Debugging;
 
 public static class Builder
 {
@@ -15,6 +17,9 @@ public static class Builder
     public static readonly Vector2 ms_GetDependencyProgress = new Vector2(0.2f, 0.4f);
     public static readonly Vector2 ms_CollectBundleInfoProgress = new Vector2(0.4f, 0.5f);
     public static readonly Vector2 ms_GenerateBuildInfoProgress = new Vector2(0.5f, 0.6f);
+    public static readonly Vector2 ms_BuildBundleProgress = new Vector2(0.6f, 0.7f);
+    public static readonly Vector2 ms_ClearBundleProgress = new Vector2(0.7f, 0.9f);
+
 
     private static readonly Profiler ms_BuildProfiler = new Profiler(nameof(Builder));
     private static readonly Profiler ms_LoadBuildSettingProfiler = ms_BuildProfiler.CreateChild(nameof(LoadSetting));
@@ -24,6 +29,9 @@ public static class Builder
     private static readonly Profiler ms_CollectDependencyProfiler = ms_CollectProfiler.CreateChild(nameof(CollectDependency));
     private static readonly Profiler ms_CollectBundleProfiler = ms_CollectProfiler.CreateChild(nameof(CollectBundle));
     private static readonly Profiler ms_GenerateManifestProfiler = ms_CollectProfiler.CreateChild(nameof(GenerateManifest));
+    private static readonly Profiler ms_BuildBundleProfiler = ms_BuildProfiler.CreateChild(nameof(BuildBundle));
+    private static readonly Profiler ms_ClearBundleProfiler = ms_BuildProfiler.CreateChild(nameof(ClearAssetBundle));
+
 
 #if UNITY_IOS
     private const string PLATFORM = "iOS";
@@ -33,17 +41,45 @@ public static class Builder
     private const string PLATFORM = "Windows";
 #endif
 
-    public static BuildSetting buildSetting { get; private set; } // 打包设置
-    public static string buildPath { get; set; } // 打包目录
+    // bundle后缀
+    public const string BUNDLE_SUFFIX = ".ab";
+    public const string BUNDLE_MANIFEST_SUFFIX = ".manifest";
 
-    public static readonly string TempPath = Path.GetFullPath(Path.Combine(Application.dataPath, "Temp")).Replace("\\", "/"); // 临时目录, 临时生成的文件都统一放在该目录
-    public static readonly string ResourcePath_Text = $"{TempPath}/Resource.txt"; // 资源描述文本
-    public static readonly string ResourcePath_Binary = $"{TempPath}/Resource.bytes"; // 资源描述二进制文件
-    public static readonly string BundlePath_Text = $"{TempPath}/Bundle.txt"; // Bundle描述文本
-    public static readonly string BundlePath_Binary = $"{TempPath}/Bundle.bytes"; // Bundle描述二进制文件
-    public static readonly string DependencyPath_Text = $"{TempPath}/Dependency.txt"; // 资源依赖描述文本
-    public static readonly string DependencyPath_Binary = $"{TempPath}/Dependency.bytes"; // 资源依赖描述二进制文件
-    public static readonly string BuildSettingPath = Path.GetFullPath("BuildSetting.xml").Replace("\\", "/"); // 打包配置
+    public static readonly ParallelOptions ParallelOptions = new ParallelOptions()
+    {
+        MaxDegreeOfParallelism = Environment.ProcessorCount * 2
+    };
+
+    // bundle打包的options
+    public static readonly BuildAssetBundleOptions BuildAssetBundleOptions =
+        BuildAssetBundleOptions.ChunkBasedCompression |
+        BuildAssetBundleOptions.DeterministicAssetBundle |
+        BuildAssetBundleOptions.StrictMode |
+        BuildAssetBundleOptions.DisableLoadAssetByFileName |
+        BuildAssetBundleOptions.DisableLoadAssetByFileNameWithExtension;
+
+    // 打包设置
+    public static BuildSetting buildSetting { get; private set; }
+
+    // 打包目录
+    public static string buildPath { get; set; }
+
+    // 临时目录, 临时生成的文件都统一放在该目录
+    public static readonly string TempPath = Path.GetFullPath(Path.Combine(Application.dataPath, "Temp")).Replace("\\", "/");
+    // 资源描述文本
+    public static readonly string ResourcePath_Text = $"{TempPath}/Resource.txt";
+    // 资源描述二进制文件
+    public static readonly string ResourcePath_Binary = $"{TempPath}/Resource.bytes";
+    // Bundle描述文本
+    public static readonly string BundlePath_Text = $"{TempPath}/Bundle.txt";
+    // Bundle描述二进制文件
+    public static readonly string BundlePath_Binary = $"{TempPath}/Bundle.bytes";
+    // 资源依赖描述文本
+    public static readonly string DependencyPath_Text = $"{TempPath}/Dependency.txt";
+    // 资源依赖描述二进制文件
+    public static readonly string DependencyPath_Binary = $"{TempPath}/Dependency.bytes";
+    // 打包配置
+    public static readonly string BuildSettingPath = Path.GetFullPath("BuildSetting.xml").Replace("\\", "/"); 
 
     #region Build MenuItem
 
@@ -158,6 +194,16 @@ public static class Builder
         ms_GenerateManifestProfiler.Start();
         GenerateManifest(assetDic, bundleDic, dependencyDic);
         ms_GenerateManifestProfiler.Stop();
+
+        // 打包AssetBundle
+        ms_BuildBundleProfiler.Start();
+        BuildBundle(bundleDic);
+        ms_BuildBundleProfiler.Stop();
+
+        // 清理多余文件
+        ms_ClearBundleProfiler.Start();
+        ClearAssetBundle(buildPath, bundleDic);
+        ms_ClearBundleProfiler.Stop();
 
         return bundleDic;
     }
@@ -279,8 +325,7 @@ public static class Builder
     /// <param name="assetDic"></param>
     /// <param name="bundleDic"></param>
     /// <param name="dependencyDic"></param>
-    private static void GenerateManifest(Dictionary<string, EResourceType> assetDic,
-        Dictionary<string, List<string>> bundleDic, Dictionary<string, List<string>> dependencyDic)
+    private static void GenerateManifest(Dictionary<string, EResourceType> assetDic, Dictionary<string, List<string>> bundleDic, Dictionary<string, List<string>> dependencyDic)
     {
         float min = ms_GenerateBuildInfoProgress.x;
         float max = ms_GenerateBuildInfoProgress.y;
@@ -486,6 +531,79 @@ public static class Builder
         EditorUtility.DisplayProgressBar($"{nameof(GenerateManifest)}", "生成打包信息", max);
 
         EditorUtility.ClearProgressBar();
+    }
+
+    /// <summary>
+    /// 打包AssetBundle
+    /// </summary>
+    /// <param name="bundleDic"></param>
+    /// <returns></returns>
+    public static AssetBundleManifest BuildBundle(Dictionary<string, List<string>> bundleDic)
+    {
+        float min = ms_BuildBundleProgress.x;
+        float max = ms_BuildBundleProgress.y;
+
+        EditorUtility.DisplayProgressBar($"{nameof(BuildBundle)}", "打包AssetBundle", min);
+
+        if (!Directory.Exists(buildPath))
+        {
+            Directory.CreateDirectory(buildPath);
+        }
+
+        AssetBundleManifest manifest = BuildPipeline.BuildAssetBundles(buildPath, GetBuilds(bundleDic), BuildAssetBundleOptions, EditorUserBuildSettings.activeBuildTarget);
+        EditorUtility.DisplayProgressBar($"{nameof(BuildBundle)}", "打包AssetBundle", max);
+
+        return manifest;
+    }
+
+    /// <summary>
+    /// 清空多余的AssetBundle
+    /// </summary>
+    /// <param name="path"></param>
+    /// <param name="bundleDic"></param>
+    public static void ClearAssetBundle(string path, Dictionary<string, List<string>> bundleDic)
+    {
+        float min = ms_ClearBundleProgress.x;
+        float max = ms_ClearBundleProgress.y;
+
+        EditorUtility.DisplayProgressBar($"{nameof(ClearAssetBundle)}", "清除多余的AssetBundle文件", min);
+
+        List<string> fileList = GetFiles(path, null, null);
+        HashSet<string> fileSet = new HashSet<string>(fileList);
+
+        foreach (var bundle in bundleDic.Keys)
+        {
+            fileSet.Remove($"{path}{bundle}");
+            fileSet.Remove($"{path}{bundle}{BUNDLE_MANIFEST_SUFFIX}");
+        }
+
+        fileSet.Remove($"{path}{PLATFORM}");
+        fileSet.Remove($"{path}{PLATFORM}{BUNDLE_MANIFEST_SUFFIX}");
+
+        Parallel.ForEach(fileSet, ParallelOptions, File.Delete);
+
+        EditorUtility.DisplayProgressBar($"{nameof(ClearAssetBundle)}", "清除多余的AssetBundle文件", max);
+    }
+
+    /// <summary>
+    /// 获取所有需要打包的AssetBundleBuild
+    /// </summary>
+    /// <param name="bundleTable"></param>
+    /// <returns></returns>
+    private static AssetBundleBuild[] GetBuilds(Dictionary<string, List<string>> bundleTable)
+    {
+        int index = 0;
+        AssetBundleBuild[] assetBundleBuilds = new AssetBundleBuild[bundleTable.Count];
+        foreach (var pair in bundleTable)
+        {
+            assetBundleBuilds[index++] = new AssetBundleBuild()
+            {
+                assetBundleName = pair.Key,
+                assetNames = pair.Value.ToArray(),
+            };
+        }
+
+        return assetBundleBuilds;
     }
 
     /// <summary>
