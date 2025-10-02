@@ -165,4 +165,17 @@ public class BuildSetting : ISupportInitialize
 
         return false;
     }
+
+    /// <summary>
+    /// 获取BundleName
+    /// </summary>
+    /// <param name="assetUrl"></param>
+    /// <param name="resourceType"></param>
+    /// <returns></returns>
+    public string GetBundleName(string assetUrl, EResourceType resourceType)
+    {
+        // TODO:
+
+        return "";
+    }
 }
