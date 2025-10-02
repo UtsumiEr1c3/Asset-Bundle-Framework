@@ -19,6 +19,7 @@ public static class Builder
     public static readonly Vector2 ms_GenerateBuildInfoProgress = new Vector2(0.5f, 0.6f);
     public static readonly Vector2 ms_BuildBundleProgress = new Vector2(0.6f, 0.7f);
     public static readonly Vector2 ms_ClearBundleProgress = new Vector2(0.7f, 0.9f);
+    public static readonly Vector2 ms_BuildManifestProgress = new Vector2(0.9f, 1f);
 
 
     private static readonly Profiler ms_BuildProfiler = new Profiler(nameof(Builder));
@@ -31,6 +32,7 @@ public static class Builder
     private static readonly Profiler ms_GenerateManifestProfiler = ms_CollectProfiler.CreateChild(nameof(GenerateManifest));
     private static readonly Profiler ms_BuildBundleProfiler = ms_BuildProfiler.CreateChild(nameof(BuildBundle));
     private static readonly Profiler ms_ClearBundleProfiler = ms_BuildProfiler.CreateChild(nameof(ClearAssetBundle));
+    private static readonly Profiler ms_BuildManifestBundleProfiler = ms_BuildProfiler.CreateChild(nameof(BuildManifest));
 
 
 #if UNITY_IOS
@@ -44,6 +46,9 @@ public static class Builder
     // bundle后缀
     public const string BUNDLE_SUFFIX = ".ab";
     public const string BUNDLE_MANIFEST_SUFFIX = ".manifest";
+
+    // bundle描述文件名称
+    public const string MANIFEST = "manifest";
 
     public static readonly ParallelOptions ParallelOptions = new ParallelOptions()
     {
@@ -80,6 +85,8 @@ public static class Builder
     public static readonly string DependencyPath_Binary = $"{TempPath}/Dependency.bytes";
     // 打包配置
     public static readonly string BuildSettingPath = Path.GetFullPath("BuildSetting.xml").Replace("\\", "/"); 
+    // 临时目录, 临时文件的ab包都放在该文件夹, 打包完成后会移除
+    public static readonly string TempBuildPath = Path.GetFullPath(Path.Combine(Application.dataPath, "../TempBuild")).Replace("\\", "/");
 
     #region Build MenuItem
 
@@ -146,6 +153,23 @@ public static class Builder
         Dictionary<string, List<string>> bundleDic = Collect();
         ms_CollectProfiler.Stop();
 
+        // 打包AssetBundle
+        ms_BuildBundleProfiler.Start();
+        BuildBundle(bundleDic);
+        ms_BuildBundleProfiler.Stop();
+
+        // 清理多余文件
+        ms_ClearBundleProfiler.Start();
+        ClearAssetBundle(buildPath, bundleDic);
+        ms_ClearBundleProfiler.Stop();
+
+        // 把描述文件打包bundle
+        ms_BuildManifestBundleProfiler.Start();
+        BuildManifest();
+        ms_BuildManifestBundleProfiler.Stop();
+
+        EditorUtility.ClearProgressBar();
+
         ms_BuildProfiler.Stop();
 
         Debug.Log($"打包完成{ms_BuildProfiler}");
@@ -194,16 +218,6 @@ public static class Builder
         ms_GenerateManifestProfiler.Start();
         GenerateManifest(assetDic, bundleDic, dependencyDic);
         ms_GenerateManifestProfiler.Stop();
-
-        // 打包AssetBundle
-        ms_BuildBundleProfiler.Start();
-        BuildBundle(bundleDic);
-        ms_BuildBundleProfiler.Stop();
-
-        // 清理多余文件
-        ms_ClearBundleProfiler.Start();
-        ClearAssetBundle(buildPath, bundleDic);
-        ms_ClearBundleProfiler.Stop();
 
         return bundleDic;
     }
@@ -289,7 +303,7 @@ public static class Builder
             }
 
             List<string> list;
-            if (bundleDic.TryGetValue(bundleName, out list))
+            if (!bundleDic.TryGetValue(bundleName, out list))
             {
                 list = new List<string>();
                 bundleDic.Add(bundleName, list);
@@ -583,6 +597,53 @@ public static class Builder
         Parallel.ForEach(fileSet, ParallelOptions, File.Delete);
 
         EditorUtility.DisplayProgressBar($"{nameof(ClearAssetBundle)}", "清除多余的AssetBundle文件", max);
+    }
+
+    private static void BuildManifest()
+    {
+        float min = ms_BuildManifestProgress.x;
+        float max = ms_BuildManifestProgress.y;
+
+        EditorUtility.DisplayProgressBar($"{nameof(BuildManifest)}", "将Manifest打包成AssetBundle", min);
+
+        if (!Directory.Exists(TempBuildPath))
+        {
+            Directory.CreateDirectory(TempBuildPath);
+        }
+
+        string prefix = Application.dataPath.Replace("/Assets", "/").Replace("\\", "/");
+
+        AssetBundleBuild manifest = new AssetBundleBuild();
+        manifest.assetBundleName = $"{MANIFEST}{BUNDLE_SUFFIX}";
+        manifest.assetNames = new string[3]
+        {
+            ResourcePath_Binary.Replace(prefix, ""),
+            BundlePath_Binary.Replace(prefix, ""),
+            DependencyPath_Binary.Replace(prefix, ""),
+        };
+
+        EditorUtility.DisplayProgressBar($"{nameof(BuildManifest)}", "将Manifest打包成AssetBundle", min + (max - min) * 0.5f);
+
+        AssetBundleManifest assetBundleManifest = BuildPipeline.BuildAssetBundles(TempBuildPath, new AssetBundleBuild[] { manifest }, BuildAssetBundleOptions, EditorUserBuildSettings.activeBuildTarget);
+
+        // 把文件copy到build目录
+        if (assetBundleManifest)
+        {
+            string manifestFile = $"{TempBuildPath}/{MANIFEST}{BUNDLE_SUFFIX}";
+            string target = $"{buildPath}/{MANIFEST}{BUNDLE_SUFFIX}";
+            if (File.Exists(manifestFile))
+            {
+                File.Copy(manifestFile, target);
+            }
+        }
+
+        // 删除临时目录
+        if (Directory.Exists(TempBuildPath))
+        {
+            Directory.Delete(TempBuildPath, true);
+        }
+
+        EditorUtility.DisplayProgressBar($"{nameof(BuildManifest)}", "将Manifest打包成AssetBundle", max);
     }
 
     /// <summary>
