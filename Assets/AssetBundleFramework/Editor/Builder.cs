@@ -10,13 +10,15 @@ using UnityEngine;
 
 public static class Builder
 {
-    public static readonly Vector2 collectTuleFileProgress = new Vector2(0, 0.2f);
+    public static readonly Vector2 collectRuleFileProgress = new Vector2(0, 0.2f);
+    public static readonly Vector2 ms_GetDependencyProgress = new Vector2(0.2f, 0.4f);
 
     private static readonly Profiler ms_BuildProfiler = new Profiler(nameof(Builder));
     private static readonly Profiler ms_LoadBuildSettingProfiler = ms_BuildProfiler.CreateChild(nameof(LoadSetting));
     private static readonly Profiler ms_SwitchPlayformProfiler = ms_BuildProfiler.CreateChild(nameof(SwitchPlatform));
     private static readonly Profiler ms_CollectProfiler = ms_BuildProfiler.CreateChild(nameof(Collect));
     private static readonly Profiler ms_CollectBuildSettingFileProfiler = ms_CollectProfiler.CreateChild("CollectBuildSettingFile");
+    private static readonly Profiler ms_CollectDependencyProfiler = ms_CollectProfiler.CreateChild(nameof(CollectDependency));
 
 #if UNITY_IOS
     private const string PLATFORM = "iOS";
@@ -112,6 +114,66 @@ public static class Builder
         ms_CollectBuildSettingFileProfiler.Start();
         HashSet<string> files = buildSetting.Collect();
         ms_CollectBuildSettingFileProfiler.Stop();
+
+        // 搜集所有文件的依赖关系
+        ms_CollectDependencyProfiler.Start();
+        Dictionary<string, List<string>> dependencyDic = CollectDependency(files);
+        ms_CollectDependencyProfiler.Stop();
+    }
+
+    /// <summary>
+    /// 收集指定文件集合的所有依赖信息
+    /// </summary>
+    /// <param name="files"></param>
+    /// <returns></returns>
+    private static Dictionary<string, List<string>> CollectDependency(ICollection<string> files)
+    {
+        float min = ms_GetDependencyProgress.x;
+        float max = ms_GetDependencyProgress.y;
+
+        Dictionary<string, List<string>> dependencyDic = new Dictionary<string, List<string>>();
+
+        // 声明fileList后, 不需要递归了
+        List<string> fileList = new List<string>(files);
+
+        for (int i = 0; i < fileList.Count; i++)
+        {
+            string assetUrl = fileList[i];
+            if (dependencyDic.ContainsKey(assetUrl))
+            {
+                continue;
+            }
+
+            if (i % 10 == 0)
+            {
+                // 大概模拟进度
+                float progress = min + (max - min) * ((float)i / (files.Count * 3));
+                EditorUtility.DisplayProgressBar($"{nameof(CollectDependency)}", "搜集依赖信息", progress);
+            }
+
+            string[] dependencies = AssetDatabase.GetDependencies(assetUrl, false);
+            List<string> dependencyList = new List<string>(dependencies.Length);
+
+            // 过滤掉不符合要求的asset
+            for (int ii = 0; ii < dependencies.Length; ii++)
+            {
+                string tempAssetUrl = dependencies[ii];
+                string extension = Path.GetExtension(tempAssetUrl).ToLower();
+                if (string.IsNullOrEmpty(extension) || extension == ".cs" || extension == ".dll")
+                {
+                    continue;
+                }
+                dependencyList.Add(tempAssetUrl);
+                if (!fileList.Contains(tempAssetUrl))
+                {
+                    fileList.Add(tempAssetUrl);
+                }
+            }
+
+            dependencyDic.Add(assetUrl, dependencyList);
+        }
+
+        return dependencyDic;
     }
 
     /// <summary>
@@ -123,9 +185,39 @@ public static class Builder
     /// <returns></returns>
     public static List<string> GetFiles(string path, string prefix, params string[] suffixes)
     {
-        List<string> result = new List<string>();
+        string[] files = Directory.GetFiles(path, $"*.*", SearchOption.AllDirectories);
+        List<string> result = new List<string>(files.Length);
 
-        // TODO:
+        for (int i = 0; i < files.Length; i++)
+        {
+            string file = files[i].Replace('\\', '/');
+
+            if (prefix != null && file.StartsWith(prefix, StringComparison.InvariantCulture))
+            {
+                continue;
+            }
+
+            if (suffixes != null && suffixes.Length > 0)
+            {
+                bool exist = false;
+
+                for (int ii = 0; ii < suffixes.Length; ii++)
+                {
+                    string suffix = suffixes[ii];
+                    if (file.EndsWith(suffix, StringComparison.InvariantCulture))
+                    {
+                        exist = true;
+                        break;
+                    }
+                }
+
+                if (!exist)
+                {
+                    continue;
+                }
+            }
+            result.Add(file);
+        }
 
         return result;
     }

@@ -8,6 +8,7 @@ using System.Xml.Serialization;
 using log4net.Filter;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 public class BuildSetting : ISupportInitialize
 {
@@ -78,8 +79,8 @@ public class BuildSetting : ISupportInitialize
     /// <returns></returns>
     public HashSet<string> Collect()
     {
-        float min = Builder.collectTuleFileProgress.x;
-        float max = Builder.collectTuleFileProgress.y;
+        float min = Builder.collectRuleFileProgress.x;
+        float max = Builder.collectRuleFileProgress.y;
 
         EditorUtility.DisplayProgressBar($"{nameof(Collect)}", "搜集打包规则资源", min);
 
@@ -147,7 +148,20 @@ public class BuildSetting : ISupportInitialize
     /// <returns></returns>
     public bool IsIgnore(List<string> ignoreList, string file)
     {
-        // TODO:
+        for (int i = 0; i < ignoreList.Count; i++)
+        {
+            string ignorePath = ignoreList[i];
+
+            if (string.IsNullOrEmpty(ignorePath))
+            {
+                continue;
+            }
+
+            if (file.StartsWith(ignorePath, StringComparison.InvariantCulture))
+            {
+                return true;
+            }
+        }
 
         return false;
     }
