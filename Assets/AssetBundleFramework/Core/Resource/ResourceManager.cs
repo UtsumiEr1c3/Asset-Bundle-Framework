@@ -6,12 +6,15 @@ using UnityEngine;
 
 public class ResourceManager
 {
-    private bool m_Editor; // 是否使用AssetDatabase加载
-
     private const string MANIFEST_BUNDLE = "manifest.ab";
     private const string RESOURCE_ASSET_NAME = "Assets/Temp/Resource.bytes";
     private const string BUNDLE_ASSET_NAME = "Assets/Temp/Bundle.bytes";
     private const string DEPENDENCY_ASSET_NAME = "Assets/Temp/Dependency.bytes";
+
+    /// <summary>
+    /// 单例
+    /// </summary>
+    public static ResourceManager instance { get; } = new ResourceManager();
 
     /// <summary>
     /// 保存资源对应的bundle
@@ -21,12 +24,27 @@ public class ResourceManager
     /// <summary>
     /// 保存资源的依赖关系
     /// </summary>
-    internal Dictionary<string, List<string>> ResourceDependencyDic = new Dictionary<string, List<string>>(); 
+    internal Dictionary<string, List<string>> ResourceDependencyDic = new Dictionary<string, List<string>>();
 
     /// <summary>
-    /// 单例
+    /// 所有资源集合
     /// </summary>
-    public static ResourceManager instance { get; } = new ResourceManager();
+    private Dictionary<string, AResource> m_ResourceDic = new Dictionary<string, AResource>();
+
+    /// <summary>
+    /// 需要释放的资源
+    /// </summary>
+    private LinkedList<AResource> m_NeedUnloadList = new LinkedList<AResource>();
+
+    /// <summary>
+    /// 异步加载集合
+    /// </summary>
+    private List<AResourceAsync> m_AsyncList = new List<AResourceAsync>();
+
+    /// <summary>
+    /// 是否使用AssetDatabase加载
+    /// </summary>
+    private bool m_Editor; 
 
     /// <summary>
     /// 初始化
@@ -129,5 +147,77 @@ public class ResourceManager
         }
 
         #endregion
+    }
+
+    /// <summary>
+    /// 加载资源
+    /// </summary>
+    /// <param name="url">资源url</param>
+    /// <param name="async">是否异步</param>
+    /// <param name="callback">加载完成回调</param>
+    public void LoadWithCallback(string url, bool async, Action<IResource> callback)
+    {
+
+    }
+
+    /// <summary>
+    /// 内部加载资源
+    /// </summary>
+    /// <param name="url">资源url</param>
+    /// <param name="async">是否异步</param>
+    /// <param name="dependency">是否依赖</param>
+    /// <returns></returns>
+    private AResource LoadInternal(string url, bool async, bool dependency)
+    {
+        AResource resource = null;
+        if (m_ResourceDic.TryGetValue(url, out resource))
+        {
+            // 从需要释放的列表中移除
+            if (resource.reference == 0)
+            {
+                m_NeedUnloadList.Remove(resource);
+            }
+
+            resource.AddReference();
+
+            return resource;
+        }
+
+        if (m_Editor)
+        {
+            resource = new EditorResource();
+        }
+        else if (async)
+        {
+            ResourceAsync resourceAsync = new ResourceAsync();
+            m_AsyncList.Add(resourceAsync);
+            resource = resourceAsync;
+        }
+        else
+        {
+            resource = new Resource();
+        }
+
+        resource.url = url;
+        m_ResourceDic.Add(url, resource);
+
+        // 加载依赖
+        List<string> dependencies = null;
+        ResourceDependencyDic.TryGetValue(url, out dependencies);
+        if (dependencies != null && dependencies.Count > 0)
+        {
+            resource.dependencies = new AResource[dependencies.Count];
+            for (int i = 0; i < dependencies.Count; i++)
+            {
+                string dependencyUrl = dependencies[i];
+                AResource dependencyResource = LoadInternal(dependencyUrl, async, true);
+                resource.dependencies[i] = dependencyResource;
+            }
+        }
+
+        resource.AddReference();
+        resource.Load();
+
+        return resource;
     }
 }
